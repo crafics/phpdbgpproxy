@@ -1,0 +1,9 @@
+/.settings
+/.project
+/.buildpath
+/composer.phar
+/vendor
+.vagrant
+Vagrantfile
+.idea
+nbproject
