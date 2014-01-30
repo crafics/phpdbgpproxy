@@ -32,6 +32,122 @@ class ProxyStartCommand extends Command
         ;
     }
 
+    private function send( $socket, $msg )
+    {
+        $msg = utf8_encode($msg."\0");
+        $length = strlen($msg);
+        while (true) {
+            echo $msg;
+            $sent = socket_write($socket, $msg, $length);
+            if ($sent === false) {
+                return;
+            }
+            if ($sent < $length) {
+                $msg = substr($msg, $sent);
+                $length -= $sent;
+            } else {
+                return;
+            }
+        }
+    }
+
+    private function proxy( $input, $output )
+    {
+        error_reporting(E_ALL);
+        set_time_limit(0);
+        ob_implicit_flush();
+
+        $clients = array();
+
+        // debugger
+        /*if (($sock_debugger = socket_create(AF_INET, SOCK_STREAM, SOL_TCP)) === false) {
+            $output->writeln("socket_create() failed: reason: " . socket_strerror(socket_last_error()) . "\n");
+        }
+        if (socket_bind($sock_debugger, '127.0.0.1', 9000) === false) {
+            $output->writeln("socket_bind() failed: reason: " . socket_strerror(socket_last_error($sock_debugger)) . "\n");
+        }
+        if (socket_listen($sock_debugger, 5) === false) {
+            $output->writeln( "socket_listen() failed: reason: " . socket_strerror(socket_last_error($sock_debugger)) . "\n");
+        }
+        array_push($clients,$sock_debugger);*/
+
+        // ide
+        if (($sock_ide = socket_create(AF_INET, SOCK_STREAM, SOL_TCP)) === false) {
+            $output->writeln("socket_create() failed: reason: " . socket_strerror(socket_last_error()) . "\n");
+        }
+        if (socket_bind($sock_ide, '127.0.0.1', 9001) === false) {
+            $output->writeln("socket_bind() failed: reason: " . socket_strerror(socket_last_error($sock_ide)) . "\n");
+        }
+        if (socket_listen($sock_ide, 5) === false) {
+            $output->writeln( "socket_listen() failed: reason: " . socket_strerror(socket_last_error($sock_ide)) . "\n");
+        }
+        array_push($clients,$sock_ide);
+
+        while (true) {
+            // create a copy, so $clients doesn't get modified by socket_select()
+            $read = $clients;
+            $write = null;
+            $except = null;
+
+            // get a list of all the clients that have data to be read from
+            // if there are no clients with data, go to next iteration
+            if (socket_select($read, $write, $except, 0) < 1)
+                continue;
+
+            if (in_array($sock_ide, $read)) {
+                $clients[] = $newsock = socket_accept($sock_ide);
+
+                // remove the listening socket from the clients-with-data array
+                $key = array_search($sock_ide, $read);
+                unset($read[$key]);
+            }
+
+            // loop through all the clients that have data to read from
+            foreach ($read as $read_sock) {
+                // read until newline or 1024 bytes
+                // socket_read while show errors when the client is disconnected, so silence the error messages
+                //$data = @socket_read($read_sock, 1024, PHP_NORMAL_READ);
+                $data = socket_read($read_sock, 1024);
+
+                // check if the client is disconnected
+                if ($data === false) {
+                    // remove client for $clients array
+                    $key = array_search($read_sock, $clients);
+                    unset($clients[$key]);
+                    //echo "client disconnected.\n";
+                    // continue to the next client to read from, if any
+                    continue;
+                }
+
+                // trim off the trailing/beginning white spaces
+                $data = trim($data);
+
+                // check if there is any data after trimming off the spaces
+                if (!empty($data)) {
+                    $this->send( $newsock, '<?xml version="1.0" encoding="UTF-8"?>'."\n".'<proxyinit success="1" idekey="crafics" address="127.0.0.1" port="9001"/>');
+
+                    // send this to all the clients in the $clients array (except the first one, which is a listening socket)
+                    foreach ($clients as $send_sock) {
+
+                        // if its the listening sock or the client that we got the message from, go to the next one in the list
+                        if ($send_sock == $sock_ide || $send_sock == $read_sock)
+                            continue;
+
+                        // write the message to the client -- add a newline character to the end of the message
+                        //socket_write($send_sock, '...'."\n");
+
+                    } // end of broadcast foreach
+
+                }
+
+            } // end of reading foreach
+        }
+
+        // close the listening sockets
+        socket_close($sock_ide);
+        socket_close($sock_debugger);
+    }
+
     /**
      * @param InputInterface $input
      * @param OutputInterface $output
@@ -51,82 +167,8 @@ class ProxyStartCommand extends Command
         if($success){
             $output->writeln("<info>proxy started</info>");
 
-            /*
-             * copied form php.net
-             */
-
-            error_reporting(E_ALL);
-
-            /* Allow the script to hang around waiting for connections. */
-            set_time_limit(0);
-
-            /* Turn on implicit output flushing so we see what we're getting
-             * as it comes in. */
-            ob_implicit_flush();
-
-            $address = '127.0.0.1';
-            $port = 9001;
-            $output->writeln("1");
-            if (($sock = socket_create(AF_INET, SOCK_STREAM, SOL_TCP)) === false) {
-
-                $output->writeln("socket_create() failed: reason: " . socket_strerror(socket_last_error()) . "\n");
-            }
-
-            if (socket_bind($sock, $address, $port) === false) {
-                $output->writeln("socket_bind() failed: reason: " . socket_strerror(socket_last_error($sock)) . "\n");
-            }
-
-            if (socket_listen($sock, 5) === false) {
-                $output->writeln( "socket_listen() failed: reason: " . socket_strerror(socket_last_error($sock)) . "\n");
-            }
-
-            $output->writeln("2");
-            do {
-                $output->writeln("3");
-                if (($msgsock = socket_accept($sock)) === false) {
-                    $output->writeln("socket_accept() failed: reason: " . socket_strerror(socket_last_error($sock)) . "\n");
-                    break;
-                }
-                $output->writeln("4");
-                /* Send instructions. */
-                /*$msg = "\nWelcome to the PHP Test Server. \n" .
-                    "To quit, type 'quit'. To shut down the server type 'shutdown'.\n";
-                socket_write($msgsock, $msg, strlen($msg));*/
-
-                do {
-                    $output->writeln("5");
-                    if (false === ($buf = socket_read($msgsock, 2048))) {
-                        $output->writeln( "socket_read() failed: reason: " . socket_strerror(socket_last_error($msgsock)) . "\n");
-                        break 2;
-                    }
-                    $output->writeln("6");
-                    if (!$buf = trim($buf)) {
-                        continue;
-                    }
-                    $output->writeln("7");
-                    if ($buf == 'quit') {
-                        break;
-                    }
-                    $output->writeln("8");
-                    if ($buf == 'shutdown') {
-                        $output->writeln("okidoki2");
-                        socket_close($msgsock);
-                        break 2;
-                    }
-                    $output->writeln("9");
-                    $talkback = "PHP: You said '$buf'.\n";
-                    $output->writeln( $talkback );
-                    socket_write($msgsock, $talkback, strlen($talkback));
-                    $output->writeln( "$buf\n" );
-                } while (true);
-                socket_close($msgsock);
-            } while (true);
-
-            socket_close($sock);
-
-
-
-
+            $this->proxy( $input, $output );
+            //$this->ide( $input, $output );
 
         } else {
             $output->writeln("<error>something went wrong</error>");
